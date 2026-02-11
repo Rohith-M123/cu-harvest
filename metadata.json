@@ -1,0 +1,7 @@
+{
+  "name": "CU HARVEST",
+  "description": "A high-performance quick-commerce web application inspired by Blinkit, featuring real-time inventory management, sales analytics, and GPS-based delivery tracking.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

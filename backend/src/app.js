@@ -38,7 +38,9 @@ app.get('/api/health', (req, res) => {
     environment: process.env.NODE_ENV || 'development'
   });
 });
-
+app.get("/", (req, res) => {
+  res.send("CU Harvest Backend is running 🚀");
+});
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);

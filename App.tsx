@@ -7,7 +7,7 @@ import RiderDashboard from './components/RiderDashboard';
 import AuthPage from './components/Auth/AuthPage';
 import Navbar from './components/Navbar';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { api } from './services/api';
+import { api, API_URL } from './services/api';
 
 const AppContent: React.FC = () => {
   const { currentUser, loading, logout } = useAuth();
@@ -42,7 +42,7 @@ const AppContent: React.FC = () => {
       // For now, suppress error if on localhost to avoid confusion, or handle gracefully
       const token = localStorage.getItem('authToken');
       // TODO: Replace with deployed backend URL
-      const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+      const backendUrl = API_URL;
 
       // Simple check to avoid blasting requests that will fail in production
       if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' && !import.meta.env.VITE_API_URL) {
@@ -62,9 +62,8 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     const fetchProducts = async () => {
       try {
-        // TODO: Replace with deployed backend URL
-        const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
-        const response = await fetch(`${backendUrl}/products`);
+        // Use centralized API_URL
+        const response = await fetch(`${API_URL}/products`);
         if (response.ok) {
           const data = await response.json();
           // Convert backend product format to frontend format
@@ -96,7 +95,7 @@ const AppContent: React.FC = () => {
 
   // Fetch Categories
   useEffect(() => {
-    const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+    const backendUrl = API_URL;
     fetch(`${backendUrl}/products/categories`)
       .then(res => {
         if (!res.ok) throw new Error("Failed to fetch");

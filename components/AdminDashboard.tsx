@@ -5,7 +5,7 @@ import InventoryManager from './Admin/InventoryManager';
 import Analytics from './Admin/Analytics';
 import AdminOrderManager from './Admin/OrderManager';
 import FeedbackManager from './Admin/FeedbackManager';
-import { api } from '../services/api';
+import { api, API_URL } from '../services/api';
 
 interface AdminDashboardProps {
   activeTab: string;
@@ -104,7 +104,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
   const token = localStorage.getItem('authToken');
 
   const toggleUserStatus = async (userId: string, currentStatus?: string) => {

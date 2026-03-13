@@ -11,7 +11,7 @@ import { doc, setDoc, getDoc, Timestamp } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { User, Role } from '../types';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+import { API_URL } from './api';
 
 export const authService = {
     signup: async (email: string, password: string, name: string, role: Role = Role.USER): Promise<void> => {

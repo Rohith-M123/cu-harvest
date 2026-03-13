@@ -51,8 +51,8 @@ const AppContent: React.FC = () => {
       }
 
       api.getUsers()
-        .then(data => {
-          if (data.success) setAdminUsers(data.users);
+        .then((data: any) => {
+          if (data && data.success) setAdminUsers(data.users);
         })
         .catch(err => console.error('Failed to fetch users:', err));
     }
@@ -62,12 +62,10 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     const fetchProducts = async () => {
       try {
-        // Use centralized API_URL
-        const response = await fetch(`${API_URL}/products`);
-        if (response.ok) {
-          const data = await response.json();
+        const response: any = await api.getProducts();
+        if (response && response.success) {
           // Convert backend product format to frontend format
-          const formattedProducts = data.products.map((p: any) => ({
+          const formattedProducts = response.products.map((p: any) => ({
             id: p.id.toString(),
             name: p.name,
             category: p.category_name,
@@ -95,20 +93,14 @@ const AppContent: React.FC = () => {
 
   // Fetch Categories
   useEffect(() => {
-    const backendUrl = API_URL;
-    fetch(`${backendUrl}/products/categories`)
-      .then(res => {
-        if (!res.ok) throw new Error("Failed to fetch");
-        return res.json();
-      })
-      .then(data => {
-        if (data.success) {
+    api.getCategories()
+      .then((data: any) => {
+        if (data && data.success) {
           setCategoriesList(data.categories);
         }
       })
       .catch(err => {
         console.warn('Backend unavailable, using default categories:', err);
-        // Fallback categories if needed, or just leave empty
       });
   }, []);
 
@@ -149,17 +141,15 @@ const AppContent: React.FC = () => {
         let backendOrders: any[] = [];
 
         if (currentUser.role === Role.ADMIN) {
-          const response = await api.getAllOrders();
-          if (response.success) backendOrders = response.orders;
+          const response: any = await api.getAllOrders();
+          if (response && response.success) backendOrders = response.orders;
         } else if (currentUser.role === Role.RIDER) {
-          // Riders fetch their own orders in RiderDashboard, but we might want to keep 'orders' empty here
-          // or fetch assigned ones if we want to show them in some global state.
-          // For now, let's keep it empty to match previous logic.
+          // ... (rest unchanged)
           setOrders([]);
           return;
         } else {
-          const response = await api.getUserOrders();
-          if (response.success) backendOrders = response.orders;
+          const response: any = await api.getUserOrders();
+          if (response && response.success) backendOrders = response.orders;
         }
 
         const formattedOrders = backendOrders.map((o: any) => ({
@@ -212,7 +202,8 @@ const AppContent: React.FC = () => {
         quantity: item.quantity
       }));
 
-      const response = await api.placeOrder({
+      const response: any = await api.placeOrder({
+        // ... (rest unchanged)
         items: orderItems,
         shipping_address: address,
         payment_method: paymentMethod,
@@ -223,12 +214,12 @@ const AppContent: React.FC = () => {
         delivery_slot: scheduling?.deliverySlot
       });
 
-      if (response.success) {
+      if (response && response.success) {
         alert('Order placed successfully!');
         setCart([]);
         setActiveTab('orders');
       } else {
-        alert(`Failed to place order: ${response.message}`);
+        alert(`Failed to place order: ${response?.message || 'Unknown error'}`);
       }
     } catch (error: any) {
       console.error("Place order error:", error);
@@ -261,9 +252,9 @@ const AppContent: React.FC = () => {
 
   const updateOrderStatus = async (id: string, status: OrderStatus) => {
     try {
-      const response = await api.updateOrderStatus(id, status);
+      const response: any = await api.updateOrderStatus(id, status);
 
-      if (response.success) {
+      if (response && response.success) {
         setOrders(prev => prev.map(o => o.id === id ? { ...o, status } : o));
       } else {
         alert('Failed to update status');
@@ -333,21 +324,27 @@ const AppContent: React.FC = () => {
   );
 };
 
-class ErrorBoundary extends React.Component<any, any> {
-  constructor(props: any) {
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: React.ReactNode }) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false };
   }
-  static getDerivedStateFromError(error: any) {
-    return { hasError: true, error };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
   }
+
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '2rem', color: 'red', fontFamily: 'monospace' }}>
-          <h1>React Crashed!</h1>
-          <pre>{this.state.error?.toString()}</pre>
-          <pre>{this.state.error?.stack}</pre>
+        <div className="p-4 bg-red-50 text-red-600 rounded-lg">
+          <h2 className="font-bold">Something went wrong.</h2>
+          <button 
+            onClick={() => window.location.reload()}
+            className="mt-2 bg-red-600 text-white px-4 py-2 rounded-lg"
+          >
+            Reload Page
+          </button>
         </div>
       );
     }

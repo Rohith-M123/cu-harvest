@@ -9,10 +9,10 @@ const getAuthToken = (): string | null => {
 };
 
 // Generic Fetch Wrapper
-const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
+const apiRequest = async (endpoint: string, options: RequestInit = {}): Promise<any> => {
     const token = getAuthToken();
 
-    const headers: HeadersInit = {
+    const headers: any = {
         'Content-Type': 'application/json',
         ...options.headers,
     };
@@ -22,19 +22,24 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
     }
 
     const fullUrl = `${API_URL}${endpoint}`;
-    console.log(`📡 [API Request] ${options.method || 'GET'} ${fullUrl}`);
+    console.log(`📡 [API Request] Path: ${endpoint} | Full URL: ${fullUrl}`);
 
-    const response = await fetch(fullUrl, {
-        ...options,
-        headers
-    });
+    try {
+        const response = await fetch(fullUrl, {
+            ...options,
+            headers
+        });
 
-    if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'API Request Failed');
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.message || `API Request Failed: ${response.status}`);
+        }
+
+        return await response.json();
+    } catch (error: any) {
+        console.error(`❌ [API Error] ${endpoint}:`, error);
+        throw error;
     }
-
-    return await response.json();
 };
 
 export const api = {
@@ -80,7 +85,7 @@ export const api = {
 
     // Admin - Users
     getUsers: () => apiRequest('/users'),
-    getRiders: () => apiRequest('/users/riders'), // Add this
+    getRiders: () => apiRequest('/users/riders'),
     updateUserRole: (id: string, role: string) => apiRequest(`/users/${id}/role`, {
         method: 'PUT',
         body: JSON.stringify({ role })
@@ -91,7 +96,10 @@ export const api = {
     }),
     deleteUser: (id: string) => apiRequest(`/users/${id}`, { method: 'DELETE' }),
 
-    // Auth
+    // Products
+    getProducts: () => apiRequest('/products'),
+    getCategories: () => apiRequest('/products/categories'),
+
     auth: {
         login: (data: any) => apiRequest('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
         register: (data: any) => apiRequest('/auth/register', { method: 'POST', body: JSON.stringify(data) }),

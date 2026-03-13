@@ -40,6 +40,24 @@ app.get('/api/health', (req, res) => {
     environment: process.env.NODE_ENV || 'development'
   });
 });
+
+// Diagnostic route to list all paths (for debugging)
+app.get('/api/debug-routes', (req, res) => {
+  const routes = [];
+  app._router.stack.forEach((middleware) => {
+    if (middleware.route) {
+      routes.push(`${Object.keys(middleware.route.methods).join(',').toUpperCase()} ${middleware.route.path}`);
+    } else if (middleware.name === 'router') {
+      const parentPath = middleware.regexp.toString().replace(/\\\//g, '/').replace(/\/\?\(\?=\/\|\$\)\/i/, '');
+      middleware.handle.stack.forEach((handler) => {
+        if (handler.route) {
+          routes.push(`${Object.keys(handler.route.methods).join(',').toUpperCase()} /api${handler.route.path}`);
+        }
+      });
+    }
+  });
+  res.json({ success: true, routes });
+});
 app.get("/", (req, res) => {
   res.send("CU Harvest Backend is running 🚀");
 });

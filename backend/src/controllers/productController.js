@@ -1,4 +1,6 @@
-import { pool } from '../config/database.js';
+import Product from '../models/Product.js';
+import Category from '../models/Category.js';
+import OrderItem from '../models/OrderItem.js';
 import { authenticate, authorizeAdmin } from '../middleware/auth.js';
 import { productSchema } from '../middleware/validation.js';
 
@@ -7,69 +9,55 @@ export const getProducts = async (req, res) => {
   try {
     const { category, search, limit = 20, page = 1 } = req.query;
 
-    let query = `
-      SELECT p.id, p.name, p.description, p.price, p.original_price, 
-             p.discount_percent, p.stock_quantity, p.unit, p.image_url,
-             p.is_active, p.created_at,
-             c.name as category_name, c.id as category_id
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      WHERE p.is_active = TRUE
-    `;
-
-    const params = [];
+    const query = { is_active: true };
 
     if (category) {
-      query += ' AND c.name = ?';
-      params.push(category);
+      const cat = await Category.findOne({ name: category });
+      if (cat) {
+        query.category_id = cat._id;
+      } else {
+        // category not found means no products
+        query.category_id = null;
+      }
     }
 
     if (search) {
-      query += ' AND (p.name LIKE ? OR p.description LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`);
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
+      ];
     }
 
-    query += ' ORDER BY p.created_at DESC';
+    const limitInt = parseInt(limit);
+    const pageInt = parseInt(page);
+    const skip = (pageInt - 1) * limitInt;
 
-    // Add pagination
-    const offset = (page - 1) * limit;
-    query += ` LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}`;
+    const products = await Product.find(query)
+      .populate('category_id', 'name')
+      .sort({ created_at: -1 })
+      .skip(skip)
+      .limit(limitInt);
 
-    console.log('Query:', query);
-    console.log('Params:', params);
+    const total = await Product.countDocuments(query);
 
-    const [products] = await pool.execute(query, params);
-    console.log(`Fetched ${products.length} products`);
-
-    // Get total count for pagination
-    let countQuery = `
-      SELECT COUNT(*) as total
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      WHERE p.is_active = TRUE
-    `;
-
-    const countParams = [];
-    if (category) {
-      countQuery += ' AND c.name = ?';
-      countParams.push(category);
-    }
-    if (search) {
-      countQuery += ' AND (p.name LIKE ? OR p.description LIKE ?)';
-      countParams.push(`%${search}%`, `%${search}%`);
-    }
-
-    const [countResult] = await pool.execute(countQuery, countParams);
-    const total = countResult[0].total;
+    // Map to include category_name to keep frontend compatibility
+    const mappedProducts = products.map(p => {
+      const pObj = p.toJSON();
+      return {
+        ...pObj,
+        category_name: p.category_id ? p.category_id.name : null,
+        category_id: p.category_id ? p.category_id._id : null
+      };
+    });
 
     res.status(200).json({
       success: true,
-      products,
+      products: mappedProducts,
       pagination: {
-        current_page: parseInt(page),
-        per_page: parseInt(limit),
+        current_page: pageInt,
+        per_page: limitInt,
         total,
-        total_pages: Math.ceil(total / limit)
+        total_pages: Math.ceil(total / limitInt)
       }
     });
 
@@ -88,27 +76,26 @@ export const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [products] = await pool.execute(
-      `SELECT p.id, p.name, p.description, p.price, p.original_price, 
-              p.discount_percent, p.stock_quantity, p.unit, p.image_url,
-              p.is_active, p.created_at,
-              c.name as category_name, c.id as category_id
-       FROM products p
-       JOIN categories c ON p.category_id = c.id
-       WHERE p.id = ? AND p.is_active = TRUE`,
-      [id]
-    );
+    const product = await Product.findOne({ _id: id, is_active: true })
+      .populate('category_id', 'name');
 
-    if (products.length === 0) {
+    if (!product) {
       return res.status(404).json({
         success: false,
         message: 'Product not found'
       });
     }
 
+    const pObj = product.toJSON();
+    const mappedProduct = {
+      ...pObj,
+      category_name: product.category_id ? product.category_id.name : null,
+      category_id: product.category_id ? product.category_id._id : null
+    };
+
     res.status(200).json({
       success: true,
-      product: products[0]
+      product: mappedProduct
     });
 
   } catch (error) {
@@ -124,9 +111,7 @@ export const getProductById = async (req, res) => {
 // Get all categories (public)
 export const getCategories = async (req, res) => {
   try {
-    const [categories] = await pool.execute(
-      'SELECT id, name, description, image_url, created_at FROM categories ORDER BY name'
-    );
+    const categories = await Category.find().sort({ name: 1 });
 
     res.status(200).json({
       success: true,
@@ -162,45 +147,43 @@ export const createProduct = [
       const { name, category_id, description, price, original_price, discount_percent,
         stock_quantity, unit, image_url, is_active } = req.body;
 
-      console.log('Backend createProduct received:', req.body);
-
       // Check if category exists
-      const [categories] = await pool.execute(
-        'SELECT id FROM categories WHERE id = ?',
-        [category_id]
-      );
-
-      if (categories.length === 0) {
+      const category = await Category.findById(category_id);
+      if (!category) {
         return res.status(404).json({
           success: false,
           message: 'Category not found'
         });
       }
 
-      const [result] = await pool.execute(
-        `INSERT INTO products (name, category_id, description, price, original_price, 
-                              discount_percent, stock_quantity, unit, image_url, is_active) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [name, category_id, description || null, price, original_price || null, discount_percent || 0,
-          stock_quantity, unit || null, image_url || null, is_active !== undefined ? is_active : true]
-      );
+      const newProduct = new Product({
+        name,
+        category_id,
+        description: description || null,
+        price,
+        original_price: original_price || null,
+        discount_percent: discount_percent || 0,
+        stock_quantity,
+        unit: unit || null,
+        image_url: image_url || null,
+        is_active: is_active !== undefined ? is_active : true
+      });
 
-      // Get the created product
-      const [products] = await pool.execute(
-        `SELECT p.id, p.name, p.description, p.price, p.original_price, 
-                p.discount_percent, p.stock_quantity, p.unit, p.image_url,
-                p.is_active, p.created_at,
-                c.name as category_name
-         FROM products p
-         JOIN categories c ON p.category_id = c.id
-         WHERE p.id = ?`,
-        [result.insertId]
-      );
+      await newProduct.save();
+
+      const savedProduct = await Product.findById(newProduct._id).populate('category_id', 'name');
+      
+      const pObj = savedProduct.toJSON();
+      const mappedProduct = {
+        ...pObj,
+        category_name: savedProduct.category_id ? savedProduct.category_id.name : null,
+        category_id: savedProduct.category_id ? savedProduct.category_id._id : null
+      };
 
       res.status(201).json({
         success: true,
         message: 'Product created successfully',
-        product: products[0]
+        product: mappedProduct
       });
 
     } catch (error) {
@@ -221,16 +204,11 @@ export const updateProduct = [
   async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, category_id, description, price, original_price, discount_percent,
-        stock_quantity, unit, image_url, is_active } = req.body;
+      const updateData = req.body;
 
       // Check if product exists
-      const [existingProducts] = await pool.execute(
-        'SELECT id FROM products WHERE id = ?',
-        [id]
-      );
-
-      if (existingProducts.length === 0) {
+      const product = await Product.findById(id);
+      if (!product) {
         return res.status(404).json({
           success: false,
           message: 'Product not found'
@@ -238,13 +216,9 @@ export const updateProduct = [
       }
 
       // Check if category exists (if provided)
-      if (category_id) {
-        const [categories] = await pool.execute(
-          'SELECT id FROM categories WHERE id = ?',
-          [category_id]
-        );
-
-        if (categories.length === 0) {
+      if (updateData.category_id) {
+        const category = await Category.findById(updateData.category_id);
+        if (!category) {
           return res.status(404).json({
             success: false,
             message: 'Category not found'
@@ -252,80 +226,23 @@ export const updateProduct = [
         }
       }
 
-      // Build update query dynamically
-      let query = 'UPDATE products SET ';
-      const params = [];
-      const fields = [];
+      const updatedProduct = await Product.findByIdAndUpdate(
+        id,
+        { $set: updateData },
+        { new: true }
+      ).populate('category_id', 'name');
 
-      if (name !== undefined) {
-        fields.push('name = ?');
-        params.push(name);
-      }
-      if (category_id !== undefined) {
-        fields.push('category_id = ?');
-        params.push(category_id);
-      }
-      if (description !== undefined) {
-        fields.push('description = ?');
-        params.push(description);
-      }
-      if (price !== undefined) {
-        fields.push('price = ?');
-        params.push(price);
-      }
-      if (original_price !== undefined) {
-        fields.push('original_price = ?');
-        params.push(original_price);
-      }
-      if (discount_percent !== undefined) {
-        fields.push('discount_percent = ?');
-        params.push(discount_percent);
-      }
-      if (stock_quantity !== undefined) {
-        fields.push('stock_quantity = ?');
-        params.push(stock_quantity);
-      }
-      if (unit !== undefined) {
-        fields.push('unit = ?');
-        params.push(unit);
-      }
-      if (image_url !== undefined) {
-        fields.push('image_url = ?');
-        params.push(image_url);
-      }
-      if (is_active !== undefined) {
-        fields.push('is_active = ?');
-        params.push(is_active);
-      }
-
-      if (fields.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'No fields to update'
-        });
-      }
-
-      query += fields.join(', ') + ' WHERE id = ?';
-      params.push(id);
-
-      await pool.execute(query, params);
-
-      // Get updated product
-      const [products] = await pool.execute(
-        `SELECT p.id, p.name, p.description, p.price, p.original_price, 
-                p.discount_percent, p.stock_quantity, p.unit, p.image_url,
-                p.is_active, p.created_at,
-                c.name as category_name
-         FROM products p
-         JOIN categories c ON p.category_id = c.id
-         WHERE p.id = ?`,
-        [id]
-      );
+      const pObj = updatedProduct.toJSON();
+      const mappedProduct = {
+        ...pObj,
+        category_name: updatedProduct.category_id ? updatedProduct.category_id.name : null,
+        category_id: updatedProduct.category_id ? updatedProduct.category_id._id : null
+      };
 
       res.status(200).json({
         success: true,
         message: 'Product updated successfully',
-        product: products[0]
+        product: mappedProduct
       });
 
     } catch (error) {
@@ -348,30 +265,21 @@ export const deleteProduct = [
       const { id } = req.params;
 
       // Check if product exists
-      const [existingProducts] = await pool.execute(
-        'SELECT id, name FROM products WHERE id = ?',
-        [id]
-      );
-
-      if (existingProducts.length === 0) {
+      const product = await Product.findById(id);
+      if (!product) {
         return res.status(404).json({
           success: false,
           message: 'Product not found'
         });
       }
 
-      // Check if product has orders (soft delete)
-      const [orderItems] = await pool.execute(
-        'SELECT COUNT(*) as count FROM order_items WHERE product_id = ?',
-        [id]
-      );
+      // Check if product has orders
+      const orderItemsCount = await OrderItem.countDocuments({ product_id: id });
 
-      if (orderItems[0].count > 0) {
+      if (orderItemsCount > 0) {
         // Soft delete - mark as inactive
-        await pool.execute(
-          'UPDATE products SET is_active = FALSE WHERE id = ?',
-          [id]
-        );
+        product.is_active = false;
+        await product.save();
 
         res.status(200).json({
           success: true,
@@ -379,7 +287,7 @@ export const deleteProduct = [
         });
       } else {
         // Hard delete
-        await pool.execute('DELETE FROM products WHERE id = ?', [id]);
+        await Product.findByIdAndDelete(id);
 
         res.status(200).json({
           success: true,
@@ -406,19 +314,25 @@ export const getLowStockProducts = [
     try {
       const threshold = req.query.threshold || 10;
 
-      const [products] = await pool.execute(
-        `SELECT p.id, p.name, p.stock_quantity, p.unit,
-                c.name as category_name
-         FROM products p
-         JOIN categories c ON p.category_id = c.id
-         WHERE p.stock_quantity <= ? AND p.is_active = TRUE
-         ORDER BY p.stock_quantity ASC`,
-        [threshold]
-      );
+      const products = await Product.find({
+        stock_quantity: { $lte: threshold },
+        is_active: true
+      })
+      .populate('category_id', 'name')
+      .sort({ stock_quantity: 1 });
+
+      const mappedProducts = products.map(p => {
+        const pObj = p.toJSON();
+        return {
+          ...pObj,
+          category_name: p.category_id ? p.category_id.name : null,
+          category_id: p.category_id ? p.category_id._id : null
+        };
+      });
 
       res.status(200).json({
         success: true,
-        products
+        products: mappedProducts
       });
 
     } catch (error) {

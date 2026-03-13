@@ -1,12 +1,13 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Role, User, Product, CartItem, Order, OrderStatus } from './types';
 import { INITIAL_PRODUCTS } from './constants';
 import UserDashboard from './components/UserDashboard';
 import AdminDashboard from './components/AdminDashboard';
+import RiderDashboard from './components/RiderDashboard';
 import AuthPage from './components/Auth/AuthPage';
 import Navbar from './components/Navbar';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { api } from './services/api';
 
 const AppContent: React.FC = () => {
   const { currentUser, loading, logout } = useAuth();
@@ -15,7 +16,7 @@ const AppContent: React.FC = () => {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [categoriesList, setCategoriesList] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'home' | 'orders' | 'profile' | 'addresses' | 'admin-inventory' | 'admin-analytics' | 'admin-orders' | 'admin-users' | 'admin-addresses' | 'admin-settings' | 'admin-profile'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'orders' | 'profile' | 'addresses' | 'admin-inventory' | 'admin-analytics' | 'admin-orders' | 'admin-users' | 'admin-addresses' | 'admin-settings' | 'admin-profile' | 'rider-dashboard'>('home');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Admin State
@@ -26,6 +27,8 @@ const AppContent: React.FC = () => {
     if (currentUser) {
       if (currentUser.role === Role.ADMIN) {
         setActiveTab('admin-analytics');
+      } else if (currentUser.role === Role.RIDER) {
+        setActiveTab('rider-dashboard');
       } else {
         setActiveTab('home');
       }
@@ -39,18 +42,15 @@ const AppContent: React.FC = () => {
       // For now, suppress error if on localhost to avoid confusion, or handle gracefully
       const token = localStorage.getItem('authToken');
       // TODO: Replace with deployed backend URL
-      const backendUrl = 'http://localhost:5001';
+      const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
 
       // Simple check to avoid blasting requests that will fail in production
-      if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' && !import.meta.env.VITE_API_URL) {
         console.warn("Backend not deployed. Admin data fetching skipped.");
         return;
       }
 
-      fetch(`${backendUrl}/api/users`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-        .then(res => res.json())
+      api.getUsers()
         .then(data => {
           if (data.success) setAdminUsers(data.users);
         })
@@ -63,7 +63,8 @@ const AppContent: React.FC = () => {
     const fetchProducts = async () => {
       try {
         // TODO: Replace with deployed backend URL
-        const response = await fetch('http://localhost:5001/api/products');
+        const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+        const response = await fetch(`${backendUrl}/products`);
         if (response.ok) {
           const data = await response.json();
           // Convert backend product format to frontend format
@@ -95,7 +96,8 @@ const AppContent: React.FC = () => {
 
   // Fetch Categories
   useEffect(() => {
-    fetch('http://localhost:5001/api/products/categories')
+    const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+    fetch(`${backendUrl}/products/categories`)
       .then(res => {
         if (!res.ok) throw new Error("Failed to fetch");
         return res.json();
@@ -139,27 +141,100 @@ const AppContent: React.FC = () => {
     }).filter(item => item.quantity > 0));
   };
 
-  const placeOrder = async (address: string, paymentMethod: string = 'UPI', notes: string = '') => {
-    if (!currentUser) return;
+  // Fetch Orders based on Role
+  useEffect(() => {
+    const fetchOrders = async () => {
+      if (!currentUser) return;
 
-    const newOrder: Order = {
-      id: Math.random().toString(36).substr(2, 9), // Temporary ID
-      userId: currentUser.id,
-      items: cart,
-      total: cart.reduce((acc, item) => acc + (item.price * item.quantity), 0),
-      status: OrderStatus.PLACED,
-      date: new Date().toISOString(),
-      address,
-      paymentMethod,
-      notes
+      try {
+        let backendOrders: any[] = [];
+
+        if (currentUser.role === Role.ADMIN) {
+          const response = await api.getAllOrders();
+          if (response.success) backendOrders = response.orders;
+        } else if (currentUser.role === Role.RIDER) {
+          // Riders fetch their own orders in RiderDashboard, but we might want to keep 'orders' empty here
+          // or fetch assigned ones if we want to show them in some global state.
+          // For now, let's keep it empty to match previous logic.
+          setOrders([]);
+          return;
+        } else {
+          const response = await api.getUserOrders();
+          if (response.success) backendOrders = response.orders;
+        }
+
+        const formattedOrders = backendOrders.map((o: any) => ({
+          id: o.id.toString(), // Use DB ID for API calls
+          orderNumber: o.order_number, // Use Order Number for display
+          userId: o.user_id,
+          items: o.items ? o.items.map((i: any) => ({
+            id: i.id?.toString(),
+            name: i.product_name || i.name || 'Product',
+            price: parseFloat(i.unit_price || 0),
+            quantity: i.quantity,
+            image: i.image_url
+          })) : [],
+          total: parseFloat(o.total_amount),
+          status: o.status,
+          date: o.created_at,
+          address: o.shipping_address,
+          paymentMethod: o.payment_method,
+          notes: o.notes,
+          riderId: o.rider_id,
+          deliveryType: o.delivery_type,
+          deliveryDate: o.delivery_date,
+          deliverySlot: o.delivery_slot
+        }));
+        setOrders(formattedOrders);
+
+      } catch (error) {
+        console.error("Failed to fetch orders:", error);
+      }
     };
 
-    // TODO: Save order to Firestore or Backend
-    // Currently just state
-    setOrders(prev => [newOrder, ...prev]);
-    setCart([]);
-    setActiveTab('orders');
-    alert('Order placed successfully!');
+    fetchOrders();
+    // Poll every 10s for updates
+    const interval = setInterval(fetchOrders, 10000);
+    return () => clearInterval(interval);
+  }, [currentUser, currentUser?.role]);
+
+  const placeOrder = async (
+    address: string, 
+    paymentMethod: string = 'UPI', 
+    notes: string = '', 
+    deliveryLocation?: {latitude: number, longitude: number},
+    scheduling?: { deliveryType: string, deliveryDate?: string, deliverySlot?: string }
+  ) => {
+    if (!currentUser) return;
+
+    try {
+      const orderItems = cart.map(item => ({
+        product_id: item.id,
+        quantity: item.quantity
+      }));
+
+      const response = await api.placeOrder({
+        items: orderItems,
+        shipping_address: address,
+        payment_method: paymentMethod,
+        notes,
+        delivery_location: deliveryLocation,
+        delivery_type: scheduling?.deliveryType,
+        delivery_date: scheduling?.deliveryDate,
+        delivery_slot: scheduling?.deliverySlot
+      });
+
+      if (response.success) {
+        alert('Order placed successfully!');
+        setCart([]);
+        setActiveTab('orders');
+      } else {
+        alert(`Failed to place order: ${response.message}`);
+      }
+    } catch (error: any) {
+      console.error("Place order error:", error);
+      alert(`Failed to place order: ${error.message}`);
+    }
   };
 
   const filteredProducts = useMemo(() => {
@@ -169,21 +244,34 @@ const AppContent: React.FC = () => {
     );
   }, [products, searchQuery]);
 
-  // Admin Methods (Stubbed for now, need Firestore implementation)
+  // Admin Methods
   const updateProduct = (updatedProduct: Product) => {
+    // Stub: Would call PUT /api/products/:id
     setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
   };
 
   const addProduct = (newProduct: Product) => {
+    // Stub: Would call POST /api/products
     setProducts(prev => [...prev, newProduct]);
   };
 
   const deleteProduct = (id: string) => {
+    // Stub: Would call DELETE /api/products/:id
     setProducts(prev => prev.filter(p => p.id !== id));
   };
 
-  const updateOrderStatus = (id: string, status: OrderStatus) => {
-    setOrders(prev => prev.map(o => o.id === id ? { ...o, status } : o));
+  const updateOrderStatus = async (id: string, status: OrderStatus) => {
+    try {
+      const response = await api.updateOrderStatus(id, status);
+
+      if (response.success) {
+        setOrders(prev => prev.map(o => o.id === id ? { ...o, status } : o));
+      } else {
+        alert('Failed to update status');
+      }
+    } catch (error) {
+      console.error('Update status error:', error);
+    }
   };
 
 
@@ -193,6 +281,11 @@ const AppContent: React.FC = () => {
 
   if (!currentUser) {
     return <AuthPage />;
+  }
+
+  // Handle Rider specific view
+  if (currentUser.role === Role.RIDER) {
+    return <RiderDashboard currentUser={currentUser} onLogout={handleLogout} />;
   }
 
   return (
@@ -241,11 +334,35 @@ const AppContent: React.FC = () => {
   );
 };
 
+class ErrorBoundary extends React.Component<any, any> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '2rem', color: 'red', fontFamily: 'monospace' }}>
+          <h1>React Crashed!</h1>
+          <pre>{this.state.error?.toString()}</pre>
+          <pre>{this.state.error?.stack}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const App: React.FC = () => {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ErrorBoundary>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+    </ErrorBoundary>
   );
 };
 

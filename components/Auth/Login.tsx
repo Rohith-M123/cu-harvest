@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Role } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
@@ -29,7 +28,7 @@ const Login: React.FC<LoginProps> = ({ onSwitchToSignup }) => {
             await login(email, password);
         } catch (err: any) {
             console.error('Login error:', err);
-            setError('Login failed: ' + err.message);
+            setError(err.message || 'Login failed');
         } finally {
             setLoading(false);
         }
@@ -61,7 +60,7 @@ const Login: React.FC<LoginProps> = ({ onSwitchToSignup }) => {
             <form onSubmit={handleLoginSubmit} className="space-y-4">
                 <div className="space-y-1">
                     <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Login Role</label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                         <button
                             type="button"
                             onClick={() => setRole(Role.USER)}
@@ -75,6 +74,13 @@ const Login: React.FC<LoginProps> = ({ onSwitchToSignup }) => {
                             className={`py-2 px-4 rounded-xl text-sm font-bold border-2 transition-all ${role === Role.ADMIN ? 'border-yellow-500 bg-yellow-50 text-yellow-700' : 'border-gray-100 text-gray-400'}`}
                         >
                             Admin
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setRole(Role.RIDER)}
+                            className={`py-2 px-4 rounded-xl text-sm font-bold border-2 transition-all ${role === Role.RIDER ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-100 text-gray-400'}`}
+                        >
+                            Rider
                         </button>
                     </div>
                 </div>

@@ -7,19 +7,25 @@ interface CartModalProps {
   onClose: () => void;
   onAdd: (p: any) => void;
   onRemove: (id: string) => void;
-  placeOrder: (addr: string, paymentMethod: string, verificationContact: string) => void;
+  placeOrder: (addr: string, paymentMethod: string, verificationContact: string, deliveryLocation?: {latitude: number, longitude: number}) => void;
   addresses: string[];
 }
 
 const CartModal: React.FC<CartModalProps> = ({ cart, onClose, onAdd, onRemove, placeOrder, addresses }) => {
-  const [step, setStep] = useState<'cart' | 'address' | 'payment'>('cart');
+  const [step, setStep] = useState<'cart' | 'address' | 'scheduling' | 'payment'>('cart');
   const [selectedAddress, setSelectedAddress] = useState((addresses && addresses[0]) || '');
   const [isLocating, setIsLocating] = useState(false);
   const [manualAddress, setManualAddress] = useState('');
+  const [deliveryLocation, setDeliveryLocation] = useState<{latitude: number, longitude: number} | undefined>(undefined);
 
   // Payment State
   const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'COD'>('UPI');
   const [verificationContact, setVerificationContact] = useState('');
+
+  // Scheduling State
+  const [deliveryType, setDeliveryType] = useState<'INSTANT' | 'SCHEDULED'>('INSTANT');
+  const [deliveryDate, setDeliveryDate] = useState(new Date().toISOString().split('T')[0]);
+  const [deliverySlot, setDeliverySlot] = useState<'MORNING' | 'AFTERNOON' | 'EVENING'>('MORNING');
 
   const cartTotal = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
   const deliveryFee = cartTotal > 500 ? 0 : 25;
@@ -31,8 +37,12 @@ const CartModal: React.FC<CartModalProps> = ({ cart, onClose, onAdd, onRemove, p
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition((position) => {
         // Mocking address conversion from lat/lng
-        const mockAddr = `Lush Green Apts, Floor 4, Flat 402, Bangalore (${position.coords.latitude.toFixed(2)}, ${position.coords.longitude.toFixed(2)})`;
+        const mockAddr = `centurion university vizianagaram,rollavaka,vizianagaram,535003 (${position.coords.latitude.toFixed(2)}, ${position.coords.longitude.toFixed(2)})`;
         setManualAddress(mockAddr);
+        setDeliveryLocation({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        });
         setIsLocating(false);
       }, () => {
         alert("Unable to retrieve location");
@@ -57,7 +67,17 @@ const CartModal: React.FC<CartModalProps> = ({ cart, onClose, onAdd, onRemove, p
       return;
     }
 
-    placeOrder(finalAddress, paymentMethod, `Verification Contact: ${verificationContact}`);
+    placeOrder(
+        finalAddress, 
+        paymentMethod, 
+        `Contact: ${verificationContact}`, 
+        deliveryLocation,
+        {
+            deliveryType,
+            deliveryDate: deliveryType === 'SCHEDULED' ? deliveryDate : undefined,
+            deliverySlot: deliveryType === 'SCHEDULED' ? deliverySlot : undefined,
+        }
+    );
     onClose();
   };
 
@@ -134,7 +154,7 @@ const CartModal: React.FC<CartModalProps> = ({ cart, onClose, onAdd, onRemove, p
                 <svg className={`w-5 h-5 ${isLocating ? 'animate-spin' : ''}`} fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
                 </svg>
-                {isLocating ? 'Locating...' : 'Use Current Location'}
+                {isLocating ? 'Locating...' : 'Use Current GPS Location'}
               </button>
 
               <div className="bg-white p-4 rounded-xl shadow-sm space-y-3">
@@ -166,6 +186,86 @@ const CartModal: React.FC<CartModalProps> = ({ cart, onClose, onAdd, onRemove, p
             </div>
           )}
 
+          {step === 'scheduling' && (
+            <div className="space-y-4">
+              <div className="bg-white p-6 rounded-xl shadow-sm space-y-6">
+                <h3 className="font-bold text-lg">Delivery Options</h3>
+                
+                <div className="grid grid-cols-2 gap-3">
+                    <button 
+                        onClick={() => setDeliveryType('INSTANT')}
+                        className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${deliveryType === 'INSTANT' ? 'border-green-600 bg-green-50' : 'border-gray-100 hover:border-gray-200'}`}
+                    >
+                        <span className="text-2xl">⚡</span>
+                        <span className="font-bold text-sm">Instant</span>
+                        <span className="text-[10px] text-gray-400">30-60 mins</span>
+                    </button>
+                    <button 
+                        onClick={() => setDeliveryType('SCHEDULED')}
+                        className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${deliveryType === 'SCHEDULED' ? 'border-green-600 bg-green-50' : 'border-gray-100 hover:border-gray-200'}`}
+                    >
+                        <span className="text-2xl">📅</span>
+                        <span className="font-bold text-sm">Schedule</span>
+                        <span className="text-[10px] text-gray-400">Next 7 days</span>
+                    </button>
+                </div>
+
+                {deliveryType === 'SCHEDULED' && (
+                    <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                        <div className="space-y-2">
+                            <label className="text-xs font-bold text-gray-400 uppercase tracking-widest pl-1">Select Date</label>
+                            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                                {[...Array(7)].map((_, i) => {
+                                    const d = new Date();
+                                    d.setDate(d.getDate() + i);
+                                    const dateStr = d.toISOString().split('T')[0];
+                                    const isSelected = deliveryDate === dateStr;
+                                    return (
+                                        <button
+                                            key={i}
+                                            onClick={() => setDeliveryDate(dateStr)}
+                                            className={`flex-shrink-0 w-16 h-20 rounded-xl border-2 flex flex-col items-center justify-center transition-all ${isSelected ? 'border-green-600 bg-green-600 text-white' : 'border-gray-100 text-gray-600 hover:border-gray-200'}`}
+                                        >
+                                            <span className="text-[10px] font-bold uppercase">{d.toLocaleDateString('en-US', { weekday: 'short' })}</span>
+                                            <span className="text-xl font-black">{d.getDate()}</span>
+                                            <span className="text-[10px] font-bold uppercase">{d.toLocaleDateString('en-US', { month: 'short' })}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <label className="text-xs font-bold text-gray-400 uppercase tracking-widest pl-1">Select Time Slot</label>
+                            <div className="grid grid-cols-1 gap-2">
+                                {[
+                                    { id: 'MORNING', label: 'Morning', time: '7 AM – 11 AM', icon: '🌅' },
+                                    { id: 'AFTERNOON', label: 'Afternoon', time: '12 PM – 4 PM', icon: '☀️' },
+                                    { id: 'EVENING', label: 'Evening', time: '5 PM – 9 PM', icon: '🌙' }
+                                ].map((slot) => (
+                                    <button
+                                        key={slot.id}
+                                        onClick={() => setDeliverySlot(slot.id as any)}
+                                        className={`p-4 rounded-xl border-2 flex items-center justify-between transition-all ${deliverySlot === slot.id ? 'border-green-600 bg-green-50' : 'border-gray-100 hover:border-gray-200'}`}
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-xl">{slot.icon}</span>
+                                            <div className="text-left">
+                                                <p className="font-bold text-sm text-gray-800">{slot.label}</p>
+                                                <p className="text-[10px] text-gray-400">{slot.time}</p>
+                                            </div>
+                                        </div>
+                                        {deliverySlot === slot.id && <div className="w-5 h-5 bg-green-600 rounded-full flex items-center justify-center"><svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg></div>}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {step === 'payment' && (
             <div className="space-y-4">
               <div className="bg-white p-4 rounded-xl shadow-sm space-y-4">
@@ -173,15 +273,15 @@ const CartModal: React.FC<CartModalProps> = ({ cart, onClose, onAdd, onRemove, p
 
                 {/* Contact Verification */}
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Verification Contact</label>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Mobile Number</label>
                   <input
                     type="text"
-                    placeholder="Email or Mobile Number"
+                    placeholder="Enter 10-digit number"
                     value={verificationContact}
                     onChange={(e) => setVerificationContact(e.target.value)}
                     className="w-full border rounded-lg p-3 text-sm focus:ring-2 focus:ring-green-500 outline-none"
                   />
-                  <p className="text-[10px] text-gray-400">We will send order updates to this contact.</p>
+                  <p className="text-[10px] text-gray-400">We will use this to contact you for delivery.</p>
                 </div>
 
                 <div className="space-y-3">
@@ -261,12 +361,13 @@ const CartModal: React.FC<CartModalProps> = ({ cart, onClose, onAdd, onRemove, p
           <button
             onClick={() => {
               if (step === 'cart') setStep('address');
-              else if (step === 'address') setStep('payment');
+              else if (step === 'address') setStep('scheduling');
+              else if (step === 'scheduling') setStep('payment');
               else handlePlaceOrder();
             }}
             className="w-full bg-green-600 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-green-700 transition-colors shadow-lg shadow-green-200"
           >
-            {step === 'cart' ? 'Proceed to Address' : step === 'address' ? 'Proceed to Payment' : `Place Order`}
+            {step === 'cart' ? 'Proceed to Address' : step === 'address' ? 'Proceed to Schedule' : step === 'scheduling' ? 'Proceed to Payment' : `Place Order`}
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
             </svg>

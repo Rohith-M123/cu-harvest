@@ -1,15 +1,19 @@
-
 export enum Role {
   USER = 'USER',
-  ADMIN = 'ADMIN'
+  ADMIN = 'ADMIN',
+  RIDER = 'RIDER'
 }
 
 export enum OrderStatus {
   PLACED = 'PLACED',
+  VERIFIED = 'VERIFIED',
   CONFIRMED = 'CONFIRMED',
+  ASSIGNED = 'ASSIGNED',
+  ACCEPTED = 'ACCEPTED',
   PACKED = 'PACKED',
   OUT_FOR_DELIVERY = 'OUT_FOR_DELIVERY',
   DELIVERED = 'DELIVERED',
+  REJECTED = 'REJECTED',
   CANCELLED = 'CANCELLED'
 }
 
@@ -33,6 +37,8 @@ export interface CartItem extends Product {
 export interface Order {
   id: string;
   userId: string;
+  orderNumber?: string; // Add this for display
+  riderId?: string; // Assigned Rider ID
   items: CartItem[];
   total: number;
   status: OrderStatus;
@@ -40,14 +46,21 @@ export interface Order {
   address: string;
   paymentMethod?: string;
   notes?: string;
+  deliveryType?: 'INSTANT' | 'SCHEDULED';
+  deliveryDate?: string;
+  deliverySlot?: 'MORNING' | 'AFTERNOON' | 'EVENING';
 }
 
 export interface User {
   id: string;
   name: string;
-  email: string;
+  email?: string;
   role: Role;
   addresses: string[];
+  createdAt?: any; // Firestore Timestamp
+  is_online?: boolean; // Rider status
+  total_deliveries?: number; // Rider stats
+  total_earnings?: number; // Rider stats
 }
 
 export interface Category {

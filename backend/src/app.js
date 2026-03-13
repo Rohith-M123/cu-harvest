@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { testConnection } from './config/database.js';
-import { initializeDatabase } from './utils/database.js';
 
 // Import routes
 import authRoutes from './routes/auth.js';
@@ -11,6 +10,8 @@ import productRoutes from './routes/products.js';
 import cartRoutes from './routes/cart.js';
 import orderRoutes from './routes/orders.js';
 import adminRoutes from './routes/admin.js';
+import riderRoutes from './routes/rider.js';
+import feedbackRoutes from './routes/feedback.js';
 
 dotenv.config();
 
@@ -21,6 +22,12 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Simple request logger
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
+  next();
+});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -39,6 +46,8 @@ app.use('/api/products', productRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/rider', riderRoutes);
+app.use('/api/feedback', feedbackRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -51,7 +60,7 @@ app.use('*', (req, res) => {
 // Global error handler
 app.use((error, req, res, next) => {
   console.error('Global error:', error);
-  
+
   res.status(error.status || 500).json({
     success: false,
     message: error.message || 'Internal server error',
@@ -78,10 +87,10 @@ const startServer = async () => {
   try {
     // Test database connection
     await testConnection();
-    
+
     // Database already initialized manually
     console.log('✅ Database already initialized')
-    
+
     // Start server
     app.listen(PORT, () => {
       console.log(`🚀 CU Harvest Backend Server running on port ${PORT}`);
@@ -97,7 +106,7 @@ const startServer = async () => {
       console.log('   GET  /api/products/categories');
       console.log('   And many more...');
     });
-    
+
   } catch (error) {
     console.error('❌ Failed to start server:', error.message);
     process.exit(1);

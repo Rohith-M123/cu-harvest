@@ -1,6 +1,6 @@
-
 import React, { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { Role } from '../../types';
 
 interface SignupProps {
     onSwitchToLogin: () => void;
@@ -13,6 +13,7 @@ const Signup: React.FC<SignupProps> = ({ onSwitchToLogin }) => {
     const [name, setName] = useState('');
     const [phone, setPhone] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
+    const [role, setRole] = useState<Role>(Role.USER); // Default to USER
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -32,10 +33,10 @@ const Signup: React.FC<SignupProps> = ({ onSwitchToLogin }) => {
 
         try {
             setLoading(true);
-            await signup(email, password, name);
+            await signup(email, password, name, role);
         } catch (err: any) {
             console.error('Signup error:', err);
-            setError('Registration failed: ' + err.message);
+            setError(err.message || 'Registration failed');
         } finally {
             setLoading(false);
         }
@@ -64,6 +65,27 @@ const Signup: React.FC<SignupProps> = ({ onSwitchToLogin }) => {
                 </div>
             )}
 
+            {/* Role Selection */}
+            <div className="space-y-1 mb-4">
+                <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Join As</label>
+                <div className="grid grid-cols-2 gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setRole(Role.USER)}
+                        className={`py-2 px-4 rounded-xl text-sm font-bold border-2 transition-all ${role === Role.USER ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-100 text-gray-400'}`}
+                    >
+                        Customer
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setRole(Role.RIDER)}
+                        className={`py-2 px-4 rounded-xl text-sm font-bold border-2 transition-all ${role === Role.RIDER ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-100 text-gray-400'}`}
+                    >
+                        Delivery Partner
+                    </button>
+                </div>
+            </div>
+
             <form onSubmit={handleSignupSubmit} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                     <input
@@ -73,13 +95,21 @@ const Signup: React.FC<SignupProps> = ({ onSwitchToLogin }) => {
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                     />
-                    <input
-                        type="tel"
-                        placeholder="Phone Number"
-                        className="w-full bg-gray-50 border-2 border-gray-100 rounded-xl py-3 px-4 focus:border-green-500 outline-none text-sm"
-                        value={phone}
-                        onChange={(e) => setPhone(e.target.value)}
-                    />
+                    <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <span className="text-gray-500 font-bold text-sm border-r pr-2">+91</span>
+                        </div>
+                        <input
+                            type="tel"
+                            placeholder="Mobile Number"
+                            className="w-full bg-gray-50 border-2 border-gray-100 rounded-xl py-3 pl-14 pr-4 focus:border-green-500 outline-none text-sm font-medium"
+                            value={phone}
+                            onChange={(e) => {
+                                const val = e.target.value.replace(/\D/g, '');
+                                if (val.length <= 10) setPhone(val);
+                            }}
+                        />
+                    </div>
                 </div>
                 <input
                     type="email"

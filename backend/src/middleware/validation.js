@@ -17,7 +17,9 @@ export const userRegistrationSchema = Joi.object({
   }),
   phone: Joi.string().pattern(/^[0-9]{10,15}$/).optional().messages({
     'string.pattern.base': 'Phone number must be 10-15 digits'
-  })
+  }),
+  role: Joi.string().valid('USER', 'ADMIN', 'RIDER').optional(),
+  firebase_uid: Joi.string().optional()
 });
 
 // User login validation schema

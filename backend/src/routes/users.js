@@ -1,16 +1,18 @@
 import express from 'express';
-import { pool } from '../config/database.js';
-import { authenticate } from '../middleware/auth.js';
+import User from '../models/User.js';
+import UserAddress from '../models/UserAddress.js';
+import Order from '../models/Order.js';
+import OrderItem from '../models/OrderItem.js';
+import CartItem from '../models/CartItem.js';
+import { authenticate, authorizeRoles } from '../middleware/auth.js';
 
 const router = express.Router();
 
 // Get user addresses
 router.get('/addresses', authenticate, async (req, res) => {
   try {
-    const [addresses] = await pool.execute(
-      'SELECT id, address_line1, address_line2, city, state, zip_code, is_default, created_at FROM user_addresses WHERE user_id = ? ORDER BY is_default DESC, created_at DESC',
-      [req.user.id]
-    );
+    const addresses = await UserAddress.find({ user_id: req.user.id })
+      .sort({ is_default: -1, created_at: -1 });
 
     res.status(200).json({
       success: true,
@@ -33,28 +35,26 @@ router.post('/addresses', authenticate, async (req, res) => {
     const { address_line1, address_line2, city, state, zip_code, is_default } = req.body;
     const userId = req.user.id;
 
-    // If this is set as default, unset other default addresses
     if (is_default) {
-      await pool.execute(
-        'UPDATE user_addresses SET is_default = FALSE WHERE user_id = ?',
-        [userId]
-      );
+      await UserAddress.updateMany({ user_id: userId }, { is_default: false });
     }
 
-    const [result] = await pool.execute(
-      'INSERT INTO user_addresses (user_id, address_line1, address_line2, city, state, zip_code, is_default) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [userId, address_line1, address_line2, city, state, zip_code, is_default || false]
-    );
+    const newAddress = new UserAddress({
+      user_id: userId,
+      address_line1,
+      address_line2,
+      city,
+      state,
+      zip_code,
+      is_default: is_default || false
+    });
 
-    const [newAddress] = await pool.execute(
-      'SELECT id, address_line1, address_line2, city, state, zip_code, is_default, created_at FROM user_addresses WHERE id = ?',
-      [result.insertId]
-    );
+    await newAddress.save();
 
     res.status(201).json({
       success: true,
       message: 'Address added successfully',
-      address: newAddress[0]
+      address: newAddress
     });
 
   } catch (error) {
@@ -71,44 +71,25 @@ router.post('/addresses', authenticate, async (req, res) => {
 router.put('/addresses/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { address_line1, address_line2, city, state, zip_code, is_default } = req.body;
+    const updateData = req.body;
     const userId = req.user.id;
 
-    // Verify address belongs to user
-    const [existingAddresses] = await pool.execute(
-      'SELECT id FROM user_addresses WHERE id = ? AND user_id = ?',
-      [id, userId]
-    );
-
-    if (existingAddresses.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Address not found'
-      });
+    const address = await UserAddress.findOne({ _id: id, user_id: userId });
+    if (!address) {
+      return res.status(404).json({ success: false, message: 'Address not found' });
     }
 
-    // If this is set as default, unset other default addresses
-    if (is_default) {
-      await pool.execute(
-        'UPDATE user_addresses SET is_default = FALSE WHERE user_id = ? AND id != ?',
-        [userId, id]
-      );
+    if (updateData.is_default) {
+      await UserAddress.updateMany({ user_id: userId, _id: { $ne: id } }, { is_default: false });
     }
 
-    await pool.execute(
-      'UPDATE user_addresses SET address_line1 = ?, address_line2 = ?, city = ?, state = ?, zip_code = ?, is_default = ? WHERE id = ?',
-      [address_line1, address_line2, city, state, zip_code, is_default || false, id]
-    );
-
-    const [updatedAddress] = await pool.execute(
-      'SELECT id, address_line1, address_line2, city, state, zip_code, is_default, created_at FROM user_addresses WHERE id = ?',
-      [id]
-    );
+    Object.assign(address, updateData);
+    await address.save();
 
     res.status(200).json({
       success: true,
       message: 'Address updated successfully',
-      address: updatedAddress[0]
+      address
     });
 
   } catch (error) {
@@ -127,28 +108,21 @@ router.delete('/addresses/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
-    // Verify address belongs to user
-    const [existingAddresses] = await pool.execute(
-      'SELECT id, is_default FROM user_addresses WHERE id = ? AND user_id = ?',
-      [id, userId]
-    );
+    const address = await UserAddress.findOne({ _id: id, user_id: userId });
 
-    if (existingAddresses.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Address not found'
-      });
+    if (!address) {
+      return res.status(404).json({ success: false, message: 'Address not found' });
     }
 
-    // If deleting default address, set another one as default if available
-    if (existingAddresses[0].is_default) {
-      await pool.execute(
-        'UPDATE user_addresses SET is_default = TRUE WHERE user_id = ? AND id != ? ORDER BY created_at ASC LIMIT 1',
-        [userId, id]
-      );
+    if (address.is_default) {
+      const nextAddress = await UserAddress.findOne({ user_id: userId, _id: { $ne: id } }).sort({ created_at: 1 });
+      if (nextAddress) {
+        nextAddress.is_default = true;
+        await nextAddress.save();
+      }
     }
 
-    await pool.execute('DELETE FROM user_addresses WHERE id = ?', [id]);
+    await UserAddress.deleteOne({ _id: id });
 
     res.status(200).json({
       success: true,
@@ -168,21 +142,20 @@ router.delete('/addresses/:id', authenticate, async (req, res) => {
 // Get user order history
 router.get('/orders', authenticate, async (req, res) => {
   try {
-    const [orders] = await pool.execute(
-      `SELECT o.id, o.order_number, o.total_amount, o.status, o.shipping_address, 
-              o.payment_method, o.payment_status, o.created_at,
-              COUNT(oi.id) as items_count
-       FROM orders o
-       LEFT JOIN order_items oi ON o.id = oi.order_id
-       WHERE o.user_id = ?
-       GROUP BY o.id
-       ORDER BY o.created_at DESC`,
-      [req.user.id]
-    );
+    const orders = await Order.find({ user_id: req.user.id }).sort({ created_at: -1 });
+
+    const mappedOrders = [];
+    for (const o of orders) {
+      const itemsCount = await OrderItem.countDocuments({ order_id: o._id });
+      mappedOrders.push({
+        ...o.toJSON(),
+        items_count: itemsCount,
+      });
+    }
 
     res.status(200).json({
       success: true,
-      orders
+      orders: mappedOrders
     });
 
   } catch (error) {
@@ -201,39 +174,28 @@ router.get('/orders/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
-    // Get order details
-    const [orders] = await pool.execute(
-      `SELECT o.id, o.order_number, o.total_amount, o.status, o.shipping_address, 
-              o.payment_method, o.payment_status, o.notes, o.created_at
-       FROM orders o
-       WHERE o.id = ? AND o.user_id = ?`,
-      [id, userId]
-    );
-
-    if (orders.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+    const order = await Order.findOne({ _id: id, user_id: userId });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    const order = orders[0];
+    const items = await OrderItem.find({ order_id: id }).populate('product_id', 'name image_url unit');
 
-    // Get order items
-    const [items] = await pool.execute(
-      `SELECT oi.id, oi.quantity, oi.unit_price, oi.total_price,
-              p.name, p.image_url, p.unit
-       FROM order_items oi
-       JOIN products p ON oi.product_id = p.id
-       WHERE oi.order_id = ?`,
-      [id]
-    );
+    const mappedItems = items.map(i => {
+      const iObj = i.toJSON();
+      return {
+        ...iObj,
+        name: i.product_id ? i.product_id.name : null,
+        image_url: i.product_id ? i.product_id.image_url : null,
+        unit: i.product_id ? i.product_id.unit : null
+      };
+    });
 
     res.status(200).json({
       success: true,
       order: {
-        ...order,
-        items
+        ...order.toJSON(),
+        items: mappedItems
       }
     });
 
@@ -247,26 +209,37 @@ router.get('/orders/:id', authenticate, async (req, res) => {
   }
 });
 
-// Get all users (Admin only)
-router.get('/', authenticate, async (req, res) => {
+// Get all riders (Admin only)
+router.get('/riders', authenticate, authorizeRoles(['ADMIN']), async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'ADMIN') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Admin only.'
-      });
-    }
+    const riders = await User.find({ role: 'RIDER' })
+      .select('id name email phone is_online created_at')
+      .sort({ name: 1 });
 
-    const [users] = await pool.execute(
-      'SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC'
-    );
+    res.status(200).json({
+      success: true,
+      riders
+    });
+  } catch (error) {
+    console.error('Get riders error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Get all users (Admin only)
+router.get('/', authenticate, authorizeRoles(['ADMIN']), async (req, res) => {
+  try {
+    const users = await User.find()
+      .select('id name email role created_at status firebase_uid')
+      .sort({ created_at: -1 });
 
     res.status(200).json({
       success: true,
       users
     });
-
   } catch (error) {
     console.error('Get all users error:', error);
     res.status(500).json({
@@ -274,6 +247,90 @@ router.get('/', authenticate, async (req, res) => {
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
+  }
+});
+
+// Toggle User Status (Admin only)
+router.put('/:id/status', authenticate, authorizeRoles(['ADMIN']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['ACTIVE', 'SUSPENDED'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status. Use ACTIVE or SUSPENDED.'
+      });
+    }
+
+    await User.findByIdAndUpdate(id, { status });
+
+    res.status(200).json({
+      success: true,
+      message: `User status updated to ${status}`
+    });
+  } catch (error) {
+    console.error('Update user status error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// Toggle User Role (Admin only)
+router.put('/:id/role', authenticate, authorizeRoles(['ADMIN']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!['USER', 'ADMIN', 'RIDER'].includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid role. Use USER, ADMIN, or RIDER.'
+      });
+    }
+
+    await User.findByIdAndUpdate(id, { role });
+
+    res.status(200).json({
+      success: true,
+      message: `User role updated to ${role}`
+    });
+  } catch (error) {
+    console.error('Update user role error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// Delete User (Admin only)
+router.delete('/:id', authenticate, authorizeRoles(['ADMIN']), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (id === req.user.id) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot delete your own account.'
+      });
+    }
+
+    // Delete dependent records
+    await CartItem.deleteMany({ user_id: id });
+    await UserAddress.deleteMany({ user_id: id });
+    
+    // Find all orders by user and delete their items + orders
+    const orders = await Order.find({ user_id: id });
+    const orderIds = orders.map(o => o._id);
+    if (orderIds.length > 0) {
+      await OrderItem.deleteMany({ order_id: { $in: orderIds } });
+      await Order.deleteMany({ user_id: id });
+    }
+
+    await User.findByIdAndDelete(id);
+
+    res.status(200).json({ success: true, message: 'User permanently deleted' });
+
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 

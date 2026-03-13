@@ -1,6 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { Order, OrderStatus } from '../types';
+import { api } from '../services/api';
+import FeedbackModal from './FeedbackModal';
 
 interface OrderTrackingProps {
   orders: Order[];
@@ -8,25 +10,54 @@ interface OrderTrackingProps {
 
 const OrderTracking: React.FC<OrderTrackingProps> = ({ orders }) => {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [trackingData, setTrackingData] = useState<any>(null);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [feedbackSuccess, setFeedbackSuccess] = useState<string | null>(null);
 
-  // Mock real-time updates (just for visual effect)
-  const [eta, setEta] = useState(15);
+  // Fetch real-time updates when an order is selected
   useEffect(() => {
-    if (selectedOrder && selectedOrder.status !== OrderStatus.DELIVERED) {
-      const timer = setInterval(() => {
-        setEta(prev => prev > 1 ? prev - 1 : 1);
-      }, 60000); // Decrease ETA every minute
-      return () => clearInterval(timer);
+    let interval: any;
+    
+    const fetchTracking = async () => {
+      if (!selectedOrder) return;
+      
+      try {
+        const response = await api.trackOrder(selectedOrder.id);
+        if (response.success && response.tracking) {
+           setTrackingData(response.tracking);
+        }
+      } catch (error) {
+        console.error("Failed to fetch tracking data", error);
+      }
+    };
+
+    if (selectedOrder && selectedOrder.status !== OrderStatus.DELIVERED && selectedOrder.status !== OrderStatus.CANCELLED) {
+      fetchTracking();
+      interval = setInterval(fetchTracking, 15000); // Update every 15s
+    } else if (selectedOrder) {
+      // Just fetch once if delivered/cancelled to get final rider details
+      fetchTracking();
     }
+
+    return () => clearInterval(interval);
   }, [selectedOrder]);
 
-  const getStatusColor = (status: OrderStatus) => {
+  const getEtaMinutes = () => {
+      if (!trackingData || !trackingData.estimated_delivery_time) return 15; // default fallback
+      const diffMs = new Date(trackingData.estimated_delivery_time).getTime() - new Date().getTime();
+      const diffMins = Math.max(1, Math.round(diffMs / 60000));
+      return diffMins;
+  };
+
+  const getStatusColor = (status: string) => {
     switch (status) {
       case OrderStatus.PLACED: return 'bg-yellow-100 text-yellow-700';
-      case OrderStatus.CONFIRMED: return 'bg-blue-100 text-blue-700';
-      case OrderStatus.PACKED: return 'bg-indigo-100 text-indigo-700';
+      case OrderStatus.VERIFIED: return 'bg-blue-100 text-blue-700';
+      case OrderStatus.ASSIGNED: return 'bg-indigo-100 text-indigo-700';
+      case OrderStatus.ACCEPTED: return 'bg-cyan-100 text-cyan-700';
       case OrderStatus.OUT_FOR_DELIVERY: return 'bg-purple-100 text-purple-700';
       case OrderStatus.DELIVERED: return 'bg-green-100 text-green-700';
+      case OrderStatus.REJECTED:
       case OrderStatus.CANCELLED: return 'bg-red-100 text-red-700';
       default: return 'bg-gray-100 text-gray-700';
     }
@@ -34,16 +65,18 @@ const OrderTracking: React.FC<OrderTrackingProps> = ({ orders }) => {
 
   const steps = [
     { status: OrderStatus.PLACED, label: "Order Placed", icon: "📝" },
-    { status: OrderStatus.CONFIRMED, label: "Order Confirmed", icon: "👍" },
-    { status: OrderStatus.PACKED, label: "Packed", icon: "📦" },
+    { status: OrderStatus.VERIFIED, label: "Order Confirmed", icon: "👍" },
+    { status: OrderStatus.ASSIGNED, label: "Assigned to Rider", icon: "👤" },
     { status: OrderStatus.OUT_FOR_DELIVERY, label: "Out for Delivery", icon: "🛵" },
     { status: OrderStatus.DELIVERED, label: "Delivered", icon: "🏠" },
   ];
 
-  const getCurrentStepIndex = (status: OrderStatus) => {
-    // Handle CANCELLED separately or map to 0
-    if (status === OrderStatus.CANCELLED) return -1;
-    return steps.findIndex(s => s.status === status);
+  const getCurrentStepIndex = (status: string) => {
+    // Map non-standard statuses
+    let effectiveStatus = status;
+    if (status === OrderStatus.ACCEPTED || status === 'PACKED') effectiveStatus = OrderStatus.ASSIGNED;
+    if (status === OrderStatus.CANCELLED || status === OrderStatus.REJECTED) return -1;
+    return steps.findIndex(s => s.status === effectiveStatus);
   };
 
   if (orders.length === 0) {
@@ -60,28 +93,56 @@ const OrderTracking: React.FC<OrderTrackingProps> = ({ orders }) => {
 
   // Detailed View
   if (selectedOrder) {
-    const currentStep = getCurrentStepIndex(selectedOrder.status);
+    const activeStatus = trackingData ? trackingData.status : selectedOrder.status;
+    const currentStep = getCurrentStepIndex(activeStatus);
 
     return (
       <div className="max-w-2xl mx-auto">
-        <button onClick={() => setSelectedOrder(null)} className="mb-4 flex items-center text-gray-500 hover:text-green-600 font-bold text-sm">
+        {/* Feedback Modal Overlay */}
+        {showFeedbackModal && selectedOrder && (
+            <FeedbackModal 
+              orderId={selectedOrder.id}
+              onClose={() => setShowFeedbackModal(false)}
+              onSuccess={() => {
+                  setShowFeedbackModal(false);
+                  setFeedbackSuccess(selectedOrder.id);
+              }}
+            />
+        )}
+        <button onClick={() => { setSelectedOrder(null); setTrackingData(null); }} className="mb-4 flex items-center text-gray-500 hover:text-green-600 font-bold text-sm">
           <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" /></svg>
           Back to Orders
         </button>
 
         <div className="bg-white rounded-2xl shadow-lg border overflow-hidden">
-          {/* Header / Map Placeholder */}
+          {/* Header */}
           <div className="bg-green-50 p-6 border-b border-green-100 text-center relative overflow-hidden">
-            {selectedOrder.status === OrderStatus.DELIVERED ? (
+            {activeStatus === OrderStatus.DELIVERED ? (
               <div className="z-10 relative">
                 <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3 text-3xl">🎉</div>
                 <h2 className="text-2xl font-black text-green-800">Order Delivered!</h2>
                 <p className="text-green-600 font-medium">Enjoy your items</p>
               </div>
+            ) : activeStatus === OrderStatus.CANCELLED || activeStatus === OrderStatus.REJECTED ? (
+               <div className="z-10 relative">
+                <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3 text-3xl">❌</div>
+                <h2 className="text-2xl font-black text-red-800">Order Cancelled</h2>
+              </div>
             ) : (
               <div className="z-10 relative">
-                <h2 className="text-3xl font-black text-green-800 mb-1">{eta} mins</h2>
-                <p className="text-green-600 font-bold uppercase tracking-wider text-xs">Estimated Delivery Time</p>
+                {selectedOrder.deliveryType === 'SCHEDULED' ? (
+                  <>
+                    <h2 className="text-2xl font-black text-green-800 mb-1">Scheduled</h2>
+                    <p className="text-green-600 font-bold uppercase tracking-wider text-xs">
+                      {new Date(selectedOrder.deliveryDate!).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })} – {selectedOrder.deliverySlot}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-3xl font-black text-green-800 mb-1">{getEtaMinutes()} mins</h2>
+                    <p className="text-green-600 font-bold uppercase tracking-wider text-xs">Estimated Delivery Time</p>
+                  </>
+                )}
 
                 {/* Live Pulse */}
                 <div className="mt-6 inline-flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm">
@@ -92,6 +153,21 @@ const OrderTracking: React.FC<OrderTrackingProps> = ({ orders }) => {
                   <span className="text-xs font-bold text-gray-700">Live Tracking</span>
                 </div>
               </div>
+            )}
+
+            {activeStatus === OrderStatus.DELIVERED && !feedbackSuccess && (
+                <button 
+                  onClick={() => setShowFeedbackModal(true)}
+                  className="mt-4 bg-white text-green-700 px-6 py-2 rounded-xl font-bold text-sm shadow-sm border border-green-100 hover:bg-green-50 transition-colors"
+                >
+                  ⭐ Rate Delivery
+                </button>
+            )}
+
+            {feedbackSuccess && (
+                <div className="mt-4 bg-green-100 text-green-800 py-2 px-4 rounded-xl text-xs font-bold inline-block animate-bounce-short">
+                    ✅ Thanks for your feedback!
+                </div>
             )}
 
             {/* Decorative Map Pattern Background */}
@@ -112,12 +188,35 @@ const OrderTracking: React.FC<OrderTrackingProps> = ({ orders }) => {
                     </div>
                     <div className={`transition-opacity ${isCompleted ? 'opacity-100' : 'opacity-40'}`}>
                       <p className={`font-bold ${isCurrent ? 'text-lg text-green-700' : 'text-sm text-gray-800'}`}>{step.label}</p>
-                      {isCurrent && <p className="text-xs text-green-600 animate-pulse font-medium">In Progress...</p>}
+                      {isCurrent && <p className="text-xs text-green-600 animate-pulse font-medium">----In Progress...</p>}
                     </div>
                   </div>
                 );
               })}
             </div>
+
+            {/* Rider Details (If tracking data exists) */}
+            {trackingData && trackingData.rider && (
+               <div className="mt-8 p-4 bg-gray-50 rounded-xl border border-gray-100 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                     <div className="w-12 h-12 bg-white rounded-full shadow-sm flex items-center justify-center text-xl border">👤</div>
+                     <div>
+                        <p className="font-bold text-gray-900">{trackingData.rider.name}</p>
+                        <p className="text-xs text-gray-500">Delivery Partner</p>
+                     </div>
+                  </div>
+                  <div className="flex gap-2">
+                     <a href={`tel:${trackingData.rider.phone}`} className="p-3 bg-white text-green-600 rounded-xl shadow-sm border hover:bg-green-50">📱</a>
+                     {trackingData.rider.location && (
+                        <a 
+                          href={`https://www.google.com/maps?q=${trackingData.rider.location.latitude},${trackingData.rider.location.longitude}`}
+                          target="_blank" rel="noreferrer"
+                          className="p-3 bg-white text-blue-600 rounded-xl shadow-sm border hover:bg-blue-50"
+                        >🗺️</a>
+                     )}
+                  </div>
+               </div>
+            )}
 
             {/* Order Details */}
             <div className="mt-8 pt-6 border-t space-y-4">
@@ -159,7 +258,6 @@ const OrderTracking: React.FC<OrderTrackingProps> = ({ orders }) => {
     );
   }
 
-  // List View
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-black">My Orders</h2>

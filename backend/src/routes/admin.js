@@ -1,15 +1,19 @@
 import express from 'express';
-import { getDashboardStats, getInventoryOverview, updateProductStock, 
-         getInventoryLogs, getAdminLogs, createCategory } from '../controllers/adminController.js';
-import { authenticate, authorizeAdmin } from '../middleware/auth.js';
+import {
+    getDashboardStats, getInventoryOverview, updateProductStock,
+    getInventoryLogs, getAdminLogs, createCategory, getOrderLocations
+} from '../controllers/adminController.js';
+import { authenticate, authorizeRoles } from '../middleware/auth.js';
 
 const router = express.Router();
 
 // All routes require admin authentication
-router.use(authenticate, authorizeAdmin);
+router.use(authenticate, authorizeRoles(['ADMIN']));
 
 // Dashboard routes
 router.get('/dashboard', getDashboardStats);
+router.get('/analytics', getDashboardStats); // Fallback for the prompt's requested path
+router.get('/order-locations', getOrderLocations);
 
 // Inventory management
 router.get('/inventory', getInventoryOverview);

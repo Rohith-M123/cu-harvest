@@ -26,16 +26,21 @@ export const authenticate = (req, res, next) => {
   }
 };
 
-// Admin authorization middleware
-export const authorizeAdmin = (req, res, next) => {
-  if (req.user.role !== 'ADMIN') {
-    return res.status(403).json({
-      success: false,
-      message: 'Access denied. Admin privileges required.'
-    });
-  }
-  next();
+// Role authorization middleware
+export const authorizeRoles = (allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.user || !allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Insufficient permissions.'
+      });
+    }
+    next();
+  };
 };
+
+// Admin authorization middleware (legacy wrapper)
+export const authorizeAdmin = authorizeRoles(['ADMIN']);
 
 // Input validation middleware
 export const validateInput = (schema) => {

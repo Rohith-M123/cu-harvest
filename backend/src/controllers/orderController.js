@@ -1,437 +1,303 @@
-import { pool } from '../config/database.js';
-import { authenticate, authorizeAdmin } from '../middleware/auth.js';
-import { orderSchema } from '../middleware/validation.js';
+import Order from '../models/Order.js';
+import OrderItem from '../models/OrderItem.js';
+import Product from '../models/Product.js';
+import CartItem from '../models/CartItem.js';
+import RiderLocation from '../models/RiderLocation.js';
+import mongoose from 'mongoose';
+import { sendOrderNotification } from '../services/emailService.js';
 
 // Create order
-export const createOrder = [
-  authenticate,
-  async (req, res) => {
-    try {
-      const { items, shipping_address, payment_method, notes } = req.body;
-      const userId = req.user.id;
+export const createOrder = async (req, res) => {
+  try {
+    const { items, shipping_address, payment_method, notes, delivery_location, delivery_type, delivery_date, delivery_slot } = req.body;
+    const userId = req.user.id;
 
-      // Validate input
-      const { error } = orderSchema.validate({ items, shipping_address, payment_method });
-      if (error) {
-        return res.status(400).json({
-          success: false,
-          message: 'Validation error',
-          details: error.details.map(detail => detail.message)
-        });
-      }
-
-      if (!items || items.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Order must contain at least one item'
-        });
-      }
-
-      // Start transaction
-      const connection = await pool.getConnection();
-      await connection.beginTransaction();
-
-      try {
-        // Validate products and calculate total
-        let totalAmount = 0;
-        const orderItems = [];
-
-        for (const item of items) {
-          const [products] = await connection.execute(
-            'SELECT id, name, price, stock_quantity, is_active FROM products WHERE id = ? AND is_active = TRUE FOR UPDATE',
-            [item.product_id]
-          );
-
-          if (products.length === 0) {
-            throw new Error(`Product with ID ${item.product_id} not found or not available`);
-          }
-
-          const product = products[0];
-
-          if (product.stock_quantity < item.quantity) {
-            throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock_quantity}, Requested: ${item.quantity}`);
-          }
-
-          const itemTotal = product.price * item.quantity;
-          totalAmount += itemTotal;
-
-          orderItems.push({
-            product_id: item.product_id,
-            quantity: item.quantity,
-            unit_price: product.price,
-            total_price: itemTotal,
-            product_name: product.name
-          });
-        }
-
-        // Generate unique order number
-        const orderNumber = `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
-
-        // Create order
-        const [orderResult] = await connection.execute(
-          `INSERT INTO orders (user_id, order_number, total_amount, shipping_address, 
-                              payment_method, notes) 
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [userId, orderNumber, totalAmount, shipping_address, payment_method, notes]
-        );
-
-        const orderId = orderResult.insertId;
-
-        // Create order items and update stock
-        for (const item of orderItems) {
-          await connection.execute(
-            'INSERT INTO order_items (order_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)',
-            [orderId, item.product_id, item.quantity, item.unit_price, item.total_price]
-          );
-
-          // Update product stock
-          await connection.execute(
-            'UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?',
-            [item.quantity, item.product_id]
-          );
-
-          // Log inventory change
-          await connection.execute(
-            'INSERT INTO inventory_logs (product_id, change_type, quantity_change, reason, created_by) VALUES (?, ?, ?, ?, ?)',
-            [item.product_id, 'STOCK_OUT', -item.quantity, `Order #${orderNumber}`, userId]
-          );
-        }
-
-        // Clear user's cart
-        await connection.execute('DELETE FROM cart_items WHERE user_id = ?', [userId]);
-
-        // Commit transaction
-        await connection.commit();
-        connection.release();
-
-        // Get created order details
-        const [orders] = await pool.execute(
-          `SELECT id, order_number, total_amount, status, shipping_address, 
-                  payment_method, payment_status, notes, created_at
-           FROM orders WHERE id = ?`,
-          [orderId]
-        );
-
-        const [orderItemsResult] = await pool.execute(
-          `SELECT oi.id, oi.quantity, oi.unit_price, oi.total_price,
-                  p.name, p.image_url, p.unit
-           FROM order_items oi
-           JOIN products p ON oi.product_id = p.id
-           WHERE oi.order_id = ?`,
-          [orderId]
-        );
-
-        res.status(201).json({
-          success: true,
-          message: 'Order placed successfully',
-          order: {
-            ...orders[0],
-            items: orderItemsResult
-          }
-        });
-
-      } catch (error) {
-        // Rollback transaction
-        await connection.rollback();
-        connection.release();
-        throw error;
-      }
-
-    } catch (error) {
-      console.error('Create order error:', error);
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Internal server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
+    if (!items || items.length === 0) {
+      return res.status(400).json({ success: false, message: 'Order must contain at least one item' });
     }
+
+    let totalAmount = 0;
+    const orderItemsToCreate = [];
+
+    for (const item of items) {
+      const product = await Product.findOne({
+        _id: item.product_id,
+        is_active: true
+      });
+
+      if (!product) throw new Error(`Product ${item.product_id} not found`);
+      if (product.stock_quantity < item.quantity) throw new Error(`Insufficient stock for ${product.name}`);
+
+      const itemTotal = product.price * item.quantity;
+      totalAmount += itemTotal;
+
+      orderItemsToCreate.push({
+        product_id: item.product_id,
+        quantity: item.quantity,
+        unit_price: product.price,
+        total_price: itemTotal
+      });
+      
+      product.stock_quantity -= item.quantity;
+      await product.save();
+    }
+
+    const orderNumber = `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+    const deliveryFee = 5.00; // Flat fee or calculated later
+
+    const newOrder = new Order({
+      user_id: userId,
+      order_number: orderNumber,
+      total_amount: totalAmount,
+      delivery_fee: deliveryFee,
+      status: 'PLACED',
+      shipping_address,
+      delivery_location,
+      payment_method,
+      notes,
+      delivery_type: delivery_type || 'INSTANT',
+      delivery_date: delivery_date ? new Date(delivery_date) : null,
+      delivery_slot,
+    });
+    await newOrder.save();
+    
+    // Set order_id on items and insert
+    const finalOrderItems = orderItemsToCreate.map(oi => ({ ...oi, order_id: newOrder._id }));
+    await OrderItem.insertMany(finalOrderItems);
+
+    // Clear cart
+    await CartItem.deleteMany({ user_id: userId });
+
+    // Send Email via Service Component
+    sendOrderNotification(req.user.email, newOrder, 'PLACED');
+    sendOrderNotification('mollirohit1020@gmail.com', newOrder, 'PLACED'); // Send to admin
+
+    res.status(201).json({ success: true, message: 'Order placed successfully', orderId: newOrder._id, orderNumber });
+
+  } catch (error) {
+    console.error('Create order error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
-];
+};
 
 // Get user orders
-export const getUserOrders = [
-  authenticate,
-  async (req, res) => {
-    try {
-      const userId = req.user.id;
-      const { status, limit = 20, page = 1 } = req.query;
+export const getUserOrders = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status } = req.query;
 
-      let query = `
-        SELECT o.id, o.order_number, o.total_amount, o.status, o.shipping_address, 
-               o.payment_method, o.payment_status, o.notes, o.created_at,
-               COUNT(oi.id) as items_count
-        FROM orders o
-        LEFT JOIN order_items oi ON o.id = oi.order_id
-        WHERE o.user_id = ?
-      `;
+    const query = { user_id: userId };
+    if (status) query.status = status;
 
-      const params = [userId];
+    const orders = await Order.find(query).sort({ created_at: -1 });
 
-      if (status) {
-        query += ' AND o.status = ?';
-        params.push(status);
-      }
+    res.status(200).json({ success: true, orders });
 
-      query += ' GROUP BY o.id ORDER BY o.created_at DESC';
-
-      // Add pagination
-      const offset = (page - 1) * limit;
-      query += ' LIMIT ? OFFSET ?';
-      params.push(parseInt(limit), offset);
-
-      const [orders] = await pool.execute(query, params);
-
-      if (orders.length > 0) {
-        const orderIds = orders.map(o => o.id);
-        const placeholders = orderIds.map(() => '?').join(',');
-
-        const [items] = await pool.execute(
-          `SELECT oi.id, oi.order_id, oi.quantity, p.image_url, p.name 
-           FROM order_items oi 
-           JOIN products p ON oi.product_id = p.id 
-           WHERE oi.order_id IN (${placeholders})`,
-          orderIds
-        );
-
-        orders.forEach(order => {
-          order.items = items.filter(i => i.order_id === order.id).map(i => ({
-            id: i.id,
-            quantity: i.quantity,
-            image: i.image_url,
-            name: i.name
-          }));
-        });
-      }
-
-      // Get total count for pagination
-      let countQuery = 'SELECT COUNT(*) as total FROM orders WHERE user_id = ?';
-      const countParams = [userId];
-
-      if (status) {
-        countQuery += ' AND status = ?';
-        countParams.push(status);
-      }
-
-      const [countResult] = await pool.execute(countQuery, countParams);
-      const total = countResult[0].total;
-
-      res.status(200).json({
-        success: true,
-        orders,
-        pagination: {
-          current_page: parseInt(page),
-          per_page: parseInt(limit),
-          total,
-          total_pages: Math.ceil(total / limit)
-        }
-      });
-
-    } catch (error) {
-      console.error('Get user orders error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
-];
-
-// Get order details
-export const getOrderDetails = [
-  authenticate,
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const userId = req.user.id;
-
-      // Get order details (verify ownership)
-      const [orders] = await pool.execute(
-        `SELECT o.id, o.order_number, o.total_amount, o.status, o.shipping_address, 
-                o.payment_method, o.payment_status, o.notes, o.created_at
-         FROM orders o
-         WHERE o.id = ? AND o.user_id = ?`,
-        [id, userId]
-      );
-
-      if (orders.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Order not found'
-        });
-      }
-
-      const order = orders[0];
-
-      // Get order items
-      const [items] = await pool.execute(
-        `SELECT oi.id, oi.quantity, oi.unit_price, oi.total_price,
-                p.name, p.image_url, p.unit
-         FROM order_items oi
-         JOIN products p ON oi.product_id = p.id
-         WHERE oi.order_id = ?`,
-        [id]
-      );
-
-      res.status(200).json({
-        success: true,
-        order: {
-          ...order,
-          items
-        }
-      });
-
-    } catch (error) {
-      console.error('Get order details error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    }
-  }
-];
+};
 
 // Admin: Get all orders
-export const getAllOrders = [
-  authenticate,
-  authorizeAdmin,
-  async (req, res) => {
-    try {
-      const { status, user_id, limit = 20, page = 1 } = req.query;
+export const getAllOrders = async (req, res) => {
+  try {
+    const { status } = req.query;
+    
+    const query = {};
+    if (status) query.status = status;
 
-      let query = `
-        SELECT o.id, o.order_number, o.total_amount, o.status, o.shipping_address, 
-               o.payment_method, o.payment_status, o.notes, o.created_at,
-               u.name as user_name, u.email as user_email,
-               COUNT(oi.id) as items_count
-        FROM orders o
-        JOIN users u ON o.user_id = u.id
-        LEFT JOIN order_items oi ON o.id = oi.order_id
-      `;
+    const orders = await Order.find(query)
+      .populate('user_id', 'name')
+      .sort({ created_at: -1 });
 
-      const params = [];
-      const whereConditions = [];
+    const mappedOrders = orders.map(o => {
+      const oObj = o.toJSON();
+      return {
+        ...oObj,
+        user_name: o.user_id ? o.user_id.name : null,
+      };
+    });
 
-      if (status) {
-        whereConditions.push('o.status = ?');
-        params.push(status);
-      }
+    res.status(200).json({ success: true, orders: mappedOrders });
 
-      if (user_id) {
-        whereConditions.push('o.user_id = ?');
-        params.push(user_id);
-      }
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-      if (whereConditions.length > 0) {
-        query += ' WHERE ' + whereConditions.join(' AND ');
-      }
+// Admin: Assign Order
+export const assignOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rider_id } = req.body;
 
-      query += ' GROUP BY o.id ORDER BY o.created_at DESC';
+    if (!rider_id) return res.status(400).json({ success: false, message: 'Rider ID required' });
 
-      // Add pagination
-      const offset = (page - 1) * limit;
-      query += ' LIMIT ? OFFSET ?';
-      params.push(parseInt(limit), offset);
+    const order = await Order.findByIdAndUpdate(
+      id,
+      {
+        rider_id,
+        status: 'ASSIGNED',
+        assigned_at: new Date()
+      },
+      { new: true }
+    ).populate('user_id');
+    
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
 
-      const [orders] = await pool.execute(query, params);
+    if (order.user_id) {
+       sendOrderNotification(order.user_id.email, order, 'ASSIGNED');
+    }
 
-      // Get total count for pagination
-      let countQuery = 'SELECT COUNT(*) as total FROM orders o';
-      const countParams = [];
+    res.status(200).json({ success: true, message: 'Order assigned to rider' });
 
-      if (whereConditions.length > 0) {
-        countQuery += ' WHERE ' + whereConditions.join(' AND ');
-        countParams.push(...params.slice(0, whereConditions.length));
-      }
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-      const [countResult] = await pool.execute(countQuery, countParams);
-      const total = countResult[0].total;
+// Update Order Status (Rider/Admin)
+export const updateOrderStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const userId = req.user.id;
+    const userRole = req.user.role;
 
-      res.status(200).json({
-        success: true,
-        orders,
-        pagination: {
-          current_page: parseInt(page),
-          per_page: parseInt(limit),
-          total,
-          total_pages: Math.ceil(total / limit)
+    const validStatuses = ['PLACED', 'VERIFIED', 'ASSIGNED', 'ACCEPTED', 'PACKED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'REJECTED', 'CANCELLED'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+
+    const order = await Order.findById(id).populate('user_id');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    if (userRole === 'RIDER') {
+      if (order.rider_id.toString() !== userId.toString()) return res.status(403).json({ success: false, message: 'Not assigned to this order' });
+
+      if (order.status === 'ASSIGNED') {
+        if (!['ACCEPTED', 'REJECTED', 'OUT_FOR_DELIVERY'].includes(status)) {
+          return res.status(400).json({ success: false, message: 'Invalid transition from ASSIGNED state' });
         }
-      });
-
-    } catch (error) {
-      console.error('Get all orders error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
+      } else if (order.status === 'ACCEPTED') {
+        if (status !== 'OUT_FOR_DELIVERY') return res.status(400).json({ success: false, message: 'Next step: OUT_FOR_DELIVERY' });
+      } else if (order.status === 'OUT_FOR_DELIVERY') {
+        if (status !== 'DELIVERED') return res.status(400).json({ success: false, message: 'Next step: DELIVERED' });
+      }
     }
-  }
-];
 
-// Admin: Update order status
-export const updateOrderStatus = [
-  authenticate,
-  authorizeAdmin,
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { status } = req.body;
+    order.status = status;
+    await order.save();
 
-      if (!status) {
-        return res.status(400).json({
-          success: false,
-          message: 'Status is required'
-        });
-      }
-
-      // Valid status transitions
-      const validStatuses = ['PLACED', 'CONFIRMED', 'PACKED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'];
-      if (!validStatuses.includes(status)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid status'
-        });
-      }
-
-      // Check if order exists
-      const [orders] = await pool.execute(
-        'SELECT id, status FROM orders WHERE id = ?',
-        [id]
-      );
-
-      if (orders.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Order not found'
-        });
-      }
-
-      // Update order status
-      await pool.execute(
-        'UPDATE orders SET status = ? WHERE id = ?',
-        [status, id]
-      );
-
-      // Log admin action
-      await pool.execute(
-        'INSERT INTO admin_logs (admin_id, action_type, table_name, record_id, old_values, new_values) VALUES (?, ?, ?, ?, ?, ?)',
-        [req.user.id, 'UPDATE_ORDER_STATUS', 'orders', id, JSON.stringify({ status: orders[0].status }), JSON.stringify({ status })]
-      );
-
-      res.status(200).json({
-        success: true,
-        message: 'Order status updated successfully'
-      });
-
-    } catch (error) {
-      console.error('Update order status error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
+    if (order.user_id && ['ACCEPTED', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(status)) {
+       sendOrderNotification(order.user_id.email, order, status);
     }
+
+    res.status(200).json({ success: true, message: 'Order status updated' });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
-];
+};
+
+// Rider: Get Assigned Orders
+export const getRiderOrders = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { history } = req.query;
+
+    let statusCondition = { $nin: ['DELIVERED', 'CANCELLED', 'REJECTED'] };
+    if (history === 'true') {
+      statusCondition = { $in: ['DELIVERED', 'CANCELLED', 'REJECTED'] };
+    }
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const orders = await Order.find({
+      rider_id: userId,
+      status: statusCondition,
+      $or: [
+        { delivery_type: 'INSTANT' },
+        { 
+          delivery_type: 'SCHEDULED', 
+          delivery_date: { $lte: today } // Show if today or past (shouldn't be past but just in case)
+        }
+      ]
+    })
+    .populate('user_id', 'name')
+    .sort({ created_at: -1 });
+
+    const mappedOrders = orders.map(o => {
+      const oObj = o.toJSON();
+      return {
+        ...oObj,
+        user_name: o.user_id ? o.user_id.name : null,
+      };
+    });
+
+    res.status(200).json({ success: true, orders: mappedOrders });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get Order Details
+export const getOrderDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const order = await Order.findById(id).populate('user_id', 'name');
+    if (!order) return res.status(404).json({ success: false });
+
+    const items = await OrderItem.find({ order_id: id }).populate('product_id', 'name');
+    
+    const mappedItems = items.map(item => item.toJSON());
+
+    const oObj = order.toJSON();
+    const mappedOrder = {
+      ...oObj,
+      user_name: order.user_id ? order.user_id.name : null,
+      items: mappedItems
+    };
+
+    res.status(200).json({ success: true, order: mappedOrder });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+// Live Order Tracking
+export const trackOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const order = await Order.findById(id).populate('rider_id', 'name phone');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    let riderLocation = null;
+    if (order.rider_id) {
+       riderLocation = await RiderLocation.findOne({ rider_id: order.rider_id._id });
+    }
+
+    res.status(200).json({
+       success: true,
+       tracking: {
+         status: order.status,
+         estimated_delivery_time: order.estimated_delivery_time || null,
+         rider: order.rider_id ? {
+            name: order.rider_id.name,
+            phone: order.rider_id.phone,
+            location: riderLocation ? {
+                 latitude: riderLocation.latitude,
+                 longitude: riderLocation.longitude,
+                 last_updated: riderLocation.last_updated
+            } : null
+         } : null
+       }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+};

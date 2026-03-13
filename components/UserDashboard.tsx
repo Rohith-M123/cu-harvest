@@ -15,7 +15,7 @@ interface UserDashboardProps {
   searchQuery: string;
   addToCart: (p: Product) => void;
   removeFromCart: (id: string) => void;
-  placeOrder: (addr: string) => void;
+  placeOrder: (addr: string, paymentMethod: string, notes: string, deliveryLocation?: {latitude: number, longitude: number}, scheduling?: { deliveryType: string, deliveryDate?: string, deliverySlot?: string }) => void;
   currentUser: User;
   addAddress: (addr: string) => void;
 }

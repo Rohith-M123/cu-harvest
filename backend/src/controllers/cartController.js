@@ -1,4 +1,5 @@
-import { pool } from '../config/database.js';
+import CartItem from '../models/CartItem.js';
+import Product from '../models/Product.js';
 import { authenticate } from '../middleware/auth.js';
 
 // Get user cart
@@ -8,26 +9,41 @@ export const getCart = [
     try {
       const userId = req.user.id;
       
-      const [cartItems] = await pool.execute(
-        `SELECT ci.id, ci.quantity, ci.added_at,
-                p.id as product_id, p.name, p.price, p.original_price, 
-                p.discount_percent, p.stock_quantity, p.unit, p.image_url,
-                (p.price * ci.quantity) as total_price
-         FROM cart_items ci
-         JOIN products p ON ci.product_id = p.id
-         WHERE ci.user_id = ? AND p.is_active = TRUE
-         ORDER BY ci.added_at DESC`,
-        [userId]
-      );
+      const cartItems = await CartItem.find({ user_id: userId })
+        .populate('product_id')
+        .sort({ added_at: -1 });
       
+      // Filter out items where product no longer exists or is inactive
+      // Optionally remove them from DB or just ignore here.
+      const validCartItems = cartItems.filter(item => item.product_id && item.product_id.is_active);
+
+      // Create mapped response similar to SQL output
+      const mappedItems = validCartItems.map(item => {
+        const p = item.product_id;
+        return {
+          id: item._id, // cart item id
+          quantity: item.quantity,
+          added_at: item.added_at,
+          product_id: p._id,
+          name: p.name,
+          price: p.price,
+          original_price: p.original_price,
+          discount_percent: p.discount_percent,
+          stock_quantity: p.stock_quantity,
+          unit: p.unit,
+          image_url: p.image_url,
+          total_price: p.price * item.quantity
+        };
+      });
+
       // Calculate cart summary
-      const totalItems = cartItems.reduce((sum, item) => sum + item.quantity, 0);
-      const totalPrice = cartItems.reduce((sum, item) => sum + item.total_price, 0);
+      const totalItems = mappedItems.reduce((sum, item) => sum + item.quantity, 0);
+      const totalPrice = mappedItems.reduce((sum, item) => sum + item.total_price, 0);
       
       res.status(200).json({
         success: true,
         cart: {
-          items: cartItems,
+          items: mappedItems,
           summary: {
             total_items: totalItems,
             total_price: parseFloat(totalPrice.toFixed(2))
@@ -63,19 +79,14 @@ export const addToCart = [
       }
       
       // Check if product exists and is active
-      const [products] = await pool.execute(
-        'SELECT id, name, price, stock_quantity, is_active FROM products WHERE id = ? AND is_active = TRUE',
-        [product_id]
-      );
+      const product = await Product.findOne({ _id: product_id, is_active: true });
       
-      if (products.length === 0) {
+      if (!product) {
         return res.status(404).json({
           success: false,
           message: 'Product not found or not available'
         });
       }
-      
-      const product = products[0];
       
       // Check stock availability
       if (product.stock_quantity < quantity) {
@@ -86,14 +97,11 @@ export const addToCart = [
       }
       
       // Check if item already in cart
-      const [existingItems] = await pool.execute(
-        'SELECT id, quantity FROM cart_items WHERE user_id = ? AND product_id = ?',
-        [userId, product_id]
-      );
+      const existingItem = await CartItem.findOne({ user_id: userId, product_id: product_id });
       
-      if (existingItems.length > 0) {
+      if (existingItem) {
         // Update quantity
-        const newQuantity = existingItems[0].quantity + quantity;
+        const newQuantity = existingItem.quantity + quantity;
         
         // Check stock again with new quantity
         if (product.stock_quantity < newQuantity) {
@@ -103,16 +111,16 @@ export const addToCart = [
           });
         }
         
-        await pool.execute(
-          'UPDATE cart_items SET quantity = ? WHERE id = ?',
-          [newQuantity, existingItems[0].id]
-        );
+        existingItem.quantity = newQuantity;
+        await existingItem.save();
       } else {
         // Add new item
-        await pool.execute(
-          'INSERT INTO cart_items (user_id, product_id, quantity) VALUES (?, ?, ?)',
-          [userId, product_id, quantity]
-        );
+        const newItem = new CartItem({
+          user_id: userId,
+          product_id: product_id,
+          quantity: quantity
+        });
+        await newItem.save();
       }
       
       res.status(200).json({
@@ -149,24 +157,18 @@ export const updateCartItem = [
       }
       
       // Verify item belongs to user and get product info
-      const [cartItems] = await pool.execute(
-        `SELECT ci.id, ci.quantity, p.id as product_id, p.stock_quantity, p.is_active
-         FROM cart_items ci
-         JOIN products p ON ci.product_id = p.id
-         WHERE ci.id = ? AND ci.user_id = ?`,
-        [id, userId]
-      );
+      const cartItem = await CartItem.findOne({ _id: id, user_id: userId }).populate('product_id');
       
-      if (cartItems.length === 0) {
+      if (!cartItem) {
         return res.status(404).json({
           success: false,
           message: 'Cart item not found'
         });
       }
       
-      const cartItem = cartItems[0];
+      const product = cartItem.product_id;
       
-      if (!cartItem.is_active) {
+      if (!product || !product.is_active) {
         return res.status(400).json({
           success: false,
           message: 'Product is no longer available'
@@ -174,18 +176,16 @@ export const updateCartItem = [
       }
       
       // Check stock availability
-      if (cartItem.stock_quantity < quantity) {
+      if (product.stock_quantity < quantity) {
         return res.status(400).json({
           success: false,
-          message: `Insufficient stock. Only ${cartItem.stock_quantity} items available`
+          message: `Insufficient stock. Only ${product.stock_quantity} items available`
         });
       }
       
       // Update quantity
-      await pool.execute(
-        'UPDATE cart_items SET quantity = ? WHERE id = ?',
-        [quantity, id]
-      );
+      cartItem.quantity = quantity;
+      await cartItem.save();
       
       res.status(200).json({
         success: true,
@@ -212,12 +212,9 @@ export const removeFromCart = [
       const userId = req.user.id;
       
       // Verify item belongs to user
-      const [cartItems] = await pool.execute(
-        'SELECT id FROM cart_items WHERE id = ? AND user_id = ?',
-        [id, userId]
-      );
+      const cartItem = await CartItem.findOne({ _id: id, user_id: userId });
       
-      if (cartItems.length === 0) {
+      if (!cartItem) {
         return res.status(404).json({
           success: false,
           message: 'Cart item not found'
@@ -225,7 +222,7 @@ export const removeFromCart = [
       }
       
       // Remove item
-      await pool.execute('DELETE FROM cart_items WHERE id = ?', [id]);
+      await CartItem.deleteOne({ _id: id });
       
       res.status(200).json({
         success: true,
@@ -250,7 +247,7 @@ export const clearCart = [
     try {
       const userId = req.user.id;
       
-      await pool.execute('DELETE FROM cart_items WHERE user_id = ?', [userId]);
+      await CartItem.deleteMany({ user_id: userId });
       
       res.status(200).json({
         success: true,

@@ -1,4 +1,7 @@
-export const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5001/api').replace(/\/$/, '');
+const rawApiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5001/api').replace(/\/$/, '');
+export const API_URL = rawApiUrl.endsWith('/api') ? rawApiUrl : `${rawApiUrl}/api`;
+
+console.log('🌐 [API Service] Initialized with Base URL:', API_URL);
 
 // Helper to get current ID token from localStorage
 const getAuthToken = (): string | null => {
@@ -18,7 +21,10 @@ const apiRequest = async (endpoint: string, options: RequestInit = {}) => {
         headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const response = await fetch(`${API_URL}${endpoint}`, {
+    const fullUrl = `${API_URL}${endpoint}`;
+    console.log(`📡 [API Request] ${options.method || 'GET'} ${fullUrl}`);
+
+    const response = await fetch(fullUrl, {
         ...options,
         headers
     });

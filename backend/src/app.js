@@ -25,9 +25,11 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Simple request logger
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+  console.log('   Headers:', JSON.stringify(req.headers, null, 2));
   next();
 });
+
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

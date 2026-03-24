@@ -1,4 +1,4 @@
-const rawApiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5001/api').replace(/\/$/, '');
+const rawApiUrl = (import.meta.env.VITE_API_URL || 'https://cu-harvest.onrender.com/api').replace(/\/$/, '');
 export const API_URL = rawApiUrl.endsWith('/api') ? rawApiUrl : `${rawApiUrl}/api`;
 
 console.log('🌐 [API Service] Initialized with Base URL:', API_URL);

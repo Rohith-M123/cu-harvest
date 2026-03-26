@@ -2,6 +2,10 @@ import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 dotenv.config();
 
+console.log('[Email Service] Initializing SMTP Transport...');
+console.log(`[Email Service] EMAIL_USER configured: ${!!process.env.EMAIL_USER}`);
+console.log(`[Email Service] EMAIL_PASS configured: ${!!process.env.EMAIL_PASS}`);
+
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -10,10 +14,8 @@ const transporter = nodemailer.createTransport({
   },
   tls: {
     rejectUnauthorized: false,
-    ciphers: 'SSLv3'
   }
 });
-
 /**
  * Send an email notification for order status updates
  * @param {string} toEmail - Recipient email address
